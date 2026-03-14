@@ -328,8 +328,20 @@ fn collect_correlation_methods(
 fn normalize_for_comparison(word: &str) -> String {
     word.chars()
         .filter(|character| !character.is_whitespace() && !character.is_ascii_punctuation())
+        .map(strip_accent)
         .flat_map(|character| character.to_uppercase())
         .collect()
+}
+
+fn strip_accent(character: char) -> char {
+    match character {
+        'à' | 'á' | 'â' | 'ä' | 'À' | 'Á' | 'Â' | 'Ä' => 'a',
+        'è' | 'é' | 'ê' | 'ë' | 'È' | 'É' | 'Ê' | 'Ë' => 'e',
+        'ì' | 'í' | 'î' | 'ï' | 'Ì' | 'Í' | 'Î' | 'Ï' => 'i',
+        'ò' | 'ó' | 'ô' | 'ö' | 'Ò' | 'Ó' | 'Ô' | 'Ö' => 'o',
+        'ù' | 'ú' | 'û' | 'ü' | 'Ù' | 'Ú' | 'Û' | 'Ü' => 'u',
+        _ => character,
+    }
 }
 
 fn are_anagrams(word_a: &[char], word_b: &[char]) -> bool {
@@ -437,6 +449,11 @@ mod tests {
     }
 
     #[test]
+    fn normalize_for_comparison_removes_accents() {
+        assert_eq!(normalize_for_comparison("perché!"), "PERCHE");
+    }
+
+    #[test]
     fn detects_one_letter_difference() {
         let methods = collect_correlation_methods("cane", "pane", 0.2);
         assert_eq!(methods, vec![CorrelationMethod::OneLetterDifference]);
@@ -445,6 +462,12 @@ mod tests {
     #[test]
     fn one_letter_difference_uses_normalized_words() {
         let methods = collect_correlation_methods("ca-ne", "pane ", 0.2);
+        assert_eq!(methods, vec![CorrelationMethod::OneLetterDifference]);
+    }
+
+    #[test]
+    fn one_letter_difference_ignores_accents() {
+        let methods = collect_correlation_methods("pèsca", "pesco", 0.2);
         assert_eq!(methods, vec![CorrelationMethod::OneLetterDifference]);
     }
 
