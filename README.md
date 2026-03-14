@@ -1,2 +1,132 @@
 # ilbersaglio
-Risoluzione del Bersaglio della Settimana Enigmistica
+
+Applicazione Rust onnx-only per verificare la correlazione tra due parole italiane (es. `OMERO` e `ODISSEA`) usando:
+
+- anagramma
+- sostituzione di una lettera
+- aggiunta o rimozione di una lettera
+- segnale semantico da modello AI in formato ONNX
+
+Il modello ONNX e obbligatorio per l'esecuzione.
+Puoi passarlo come directory oppure come singolo file ZIP che contiene `model.onnx` e `tokenizer.json`.
+
+Il progetto include:
+
+- una libreria Rust riusabile
+- una CLI pronta all'uso
+
+## Obiettivo: dimensione ridotta + buona compatibilita
+
+L'approccio consigliato e usare un modello sentence-transformer multilingua esportato in ONNX e quantizzato int8.
+
+Raccomandazione pratica:
+
+- modello base: `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2`
+- esportazione ONNX + quantizzazione con `optimum-cli`
+
+Dettagli operativi in [resources/models/README.md](resources/models/README.md).
+
+### Setup rapido modello ONNX (Windows/PowerShell)
+
+```powershell
+./resources/models/setup-model.ps1
+```
+
+Opzioni utili:
+
+```powershell
+./resources/models/setup-model.ps1 -OutputDir .\resources\models\it-mini-quant
+./resources/models/setup-model.ps1 -ModelId sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
+./resources/models/setup-model.ps1 -SkipVenv
+./resources/models/setup-model.ps1 -Mode reliable
+./resources/models/setup-model.ps1 -Mode compact
+```
+
+`-Mode reliable` (default): massima compatibilita con runtime Rust `tract-onnx`.
+
+`-Mode compact`: usa il modello quantizzato come `model.onnx` (piu piccolo, ma possibile incompatibilita runtime su alcuni grafi ONNX).
+
+## Build
+
+```bash
+cargo build --release
+```
+
+## Uso CLI
+
+### 1) Con modello ONNX da directory
+
+```bash
+cargo run --release --bin ilbersaglio-cli -- OMERO ODISSEA --model-dir resources/deploy
+```
+
+Output testuale:
+
+```text
+Parola A      : OMERO
+Parola B      : ODISSEA
+Correlazione  : 0.8421
+Esito         : positiva
+Metodo/i      : in relazione semantica
+```
+
+### 2) Con modello ONNX da file ZIP
+
+```bash
+cargo run --release --bin ilbersaglio-cli -- OMERO ODISSEA --model-dir dist/model-bundle.zip
+```
+
+Note:
+
+- nel file ZIP devono essere presenti `model.onnx` e `tokenizer.json` (anche dentro sottocartelle)
+- il parametro resta `--model-dir` per retrocompatibilita, ma ora accetta anche un percorso a `.zip`
+- se `--model-dir` punta a una directory senza `model.onnx`/`tokenizer.json`, la CLI prova automaticamente a usare uno ZIP compatibile trovato nella directory (es. `dist/model-bundle.zip`)
+
+### 3) Output JSON
+
+```bash
+cargo run --release --bin ilbersaglio-cli -- OMERO ODISSEA --model-dir resources/deploy --json
+```
+
+Esempio di output JSON:
+
+```json
+{
+    "word_a": "OMERO",
+    "word_b": "ODISSEA",
+    "score": 0.91260815,
+    "is_correlated": true,
+    "matched_methods": [
+        "semantic_relation"
+    ]
+}
+```
+
+Il modello ONNX e obbligatorio: senza `--model-dir` (o senza variabile `ILBERSAGLIO_MODEL_DIR`) la CLI termina con errore.
+
+## API libreria
+
+```rust
+use ilbersaglio::{CorrelationCalculator, CorrelationConfig};
+
+fn main() -> anyhow::Result<()> {
+    let cfg = CorrelationConfig {
+        model_dir: Some("resources/models/it-mini-quant".into()), // oppure "dist/model-bundle.zip".into()
+    };
+
+    let calc = CorrelationCalculator::new(cfg)?;
+    let result = calc.calculate("OMERO", "ODISSEA")?;
+    println!("correlazione = {:.4}", result.score);
+    println!("metodi positivi = {:?}", result.matched_methods);
+    Ok(())
+}
+```
+
+## Note tecniche
+
+- La correlazione finale e positiva se almeno uno dei controlli disponibili ha esito positivo.
+- I controlli lessicali sono implementati in funzioni distinte, separate dal controllo semantico via ONNX.
+- I controlli lessicali hanno priorita sul controllo semantico: se almeno uno di essi e positivo, `semantic_relation` non viene aggiunto ai metodi positivi.
+- Il modulo ONNX applica mean pooling sull'output token-level e poi normalizzazione L2.
+- Il punteggio semantico e derivato da cosine similarity rimappata in `[0, 1]`; il metodo `semantic_relation` e positivo da `0.60` in su.
+- Il modello ONNX e obbligatorio per il calcolo: non esiste fallback lessicale.
