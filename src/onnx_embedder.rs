@@ -56,8 +56,10 @@ impl OnnxEmbedder {
             return Err(CorrelationError::ModelNotFound(zip_path.to_path_buf()));
         }
 
-        let archive_file = File::open(zip_path).map_err(|e| CorrelationError::Internal(e.to_string()))?;
-        let mut archive = ZipArchive::new(archive_file).map_err(|e| CorrelationError::Internal(e.to_string()))?;
+        let archive_file =
+            File::open(zip_path).map_err(|e| CorrelationError::Internal(e.to_string()))?;
+        let mut archive =
+            ZipArchive::new(archive_file).map_err(|e| CorrelationError::Internal(e.to_string()))?;
 
         let temp_dir = tempfile::Builder::new()
             .prefix("ilbersaglio-model-")
@@ -74,16 +76,17 @@ impl OnnxEmbedder {
     }
 
     fn from_model_files(model_path: &Path, tokenizer_path: &Path) -> Result<Self> {
-
         if !model_path.exists() {
             return Err(CorrelationError::ModelNotFound(model_path.to_path_buf()));
         }
         if !tokenizer_path.exists() {
-            return Err(CorrelationError::TokenizerNotFound(tokenizer_path.to_path_buf()));
+            return Err(CorrelationError::TokenizerNotFound(
+                tokenizer_path.to_path_buf(),
+            ));
         }
 
-        let mut tokenizer =
-            Tokenizer::from_file(tokenizer_path).map_err(|e| CorrelationError::Tokenizer(e.to_string()))?;
+        let mut tokenizer = Tokenizer::from_file(tokenizer_path)
+            .map_err(|e| CorrelationError::Tokenizer(e.to_string()))?;
 
         tokenizer.with_padding(Some(PaddingParams {
             strategy: PaddingStrategy::Fixed(DEFAULT_MAX_LEN),
@@ -94,11 +97,12 @@ impl OnnxEmbedder {
             pad_token: "[PAD]".to_string(),
         }));
 
-        tokenizer.with_truncation(Some(TruncationParams {
-            max_length: DEFAULT_MAX_LEN,
-            ..Default::default()
-        }))
-        .map_err(|e| CorrelationError::Tokenizer(e.to_string()))?;
+        tokenizer
+            .with_truncation(Some(TruncationParams {
+                max_length: DEFAULT_MAX_LEN,
+                ..Default::default()
+            }))
+            .map_err(|e| CorrelationError::Tokenizer(e.to_string()))?;
 
         let session = tract_onnx::onnx()
             .model_for_path(&model_path)
@@ -149,7 +153,10 @@ impl OnnxEmbedder {
 
         let outputs = self
             .session
-            .run(tvec!(input_ids.into_tensor().into(), attention_mask.into_tensor().into()))
+            .run(tvec!(
+                input_ids.into_tensor().into(),
+                attention_mask.into_tensor().into()
+            ))
             .map_err(|e: TractError| CorrelationError::Ort(e.to_string()))?;
 
         let tensor = outputs[0]
@@ -220,15 +227,14 @@ fn extract_zip_entry_by_basename(
     }
 
     let idx = matched_index.ok_or_else(|| {
-        CorrelationError::InvalidInput(format!(
-            "il file ZIP deve contenere {basename}"
-        ))
+        CorrelationError::InvalidInput(format!("il file ZIP deve contenere {basename}"))
     })?;
 
     let mut src = archive
         .by_index(idx)
         .map_err(|e| CorrelationError::Internal(e.to_string()))?;
-    let mut dst = File::create(output_path).map_err(|e| CorrelationError::Internal(e.to_string()))?;
+    let mut dst =
+        File::create(output_path).map_err(|e| CorrelationError::Internal(e.to_string()))?;
     io::copy(&mut src, &mut dst).map_err(|e| CorrelationError::Internal(e.to_string()))?;
 
     Ok(())
@@ -238,7 +244,8 @@ fn find_zip_archive_candidate(model_dir: &Path) -> Result<Option<PathBuf>> {
     let mut all_zip_paths = Vec::new();
     let mut compatible_zip_paths = Vec::new();
 
-    let dir_entries = fs::read_dir(model_dir).map_err(|e| CorrelationError::Internal(e.to_string()))?;
+    let dir_entries =
+        fs::read_dir(model_dir).map_err(|e| CorrelationError::Internal(e.to_string()))?;
 
     for entry in dir_entries {
         let entry = entry.map_err(|e| CorrelationError::Internal(e.to_string()))?;
@@ -295,8 +302,10 @@ fn find_zip_archive_candidate(model_dir: &Path) -> Result<Option<PathBuf>> {
 }
 
 fn zip_contains_model_files(zip_path: &Path) -> Result<bool> {
-    let archive_file = File::open(zip_path).map_err(|e| CorrelationError::Internal(e.to_string()))?;
-    let mut archive = ZipArchive::new(archive_file).map_err(|e| CorrelationError::Internal(e.to_string()))?;
+    let archive_file =
+        File::open(zip_path).map_err(|e| CorrelationError::Internal(e.to_string()))?;
+    let mut archive =
+        ZipArchive::new(archive_file).map_err(|e| CorrelationError::Internal(e.to_string()))?;
 
     let mut has_model = false;
     let mut has_tokenizer = false;

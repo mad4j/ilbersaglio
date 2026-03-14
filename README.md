@@ -1,6 +1,6 @@
 # ilbersaglio
 
-Applicazione Rust onnx-only per verificare la correlazione tra due parole italiane (es. `OMERO` e `ODISSEA`) usando:
+Applicazione Rust onnx-only per verificare la correlazione tra parole italiane e, con tre o piu input, trovare la catena di relazioni che collega la prima parola all'ultima usando:
 
 - anagramma
 - sostituzione di una lettera
@@ -54,7 +54,7 @@ cargo build --release
 
 ## Uso CLI
 
-### 1) Con modello ONNX da directory
+### 1) Correlazione diretta tra due parole con modello ONNX da directory
 
 ```bash
 cargo run --release --bin ilbersaglio-cli -- OMERO ODISSEA --model-dir resources/deploy
@@ -70,7 +70,25 @@ Esito         : positiva
 Metodo/i      : in relazione semantica
 ```
 
-### 2) Con modello ONNX da file ZIP
+### 2) Ricerca di una catena con piu di due parole
+
+```bash
+cargo run --release --bin ilbersaglio-cli -- ROMA AMOR ONDA --model-dir resources/deploy
+```
+
+Output testuale:
+
+```text
+Parole input  : ROMA, AMOR, ONDA
+Partenza      : ROMA
+Arrivo        : ONDA
+Esito         : positiva
+Catena        : ROMA -> AMOR -> ONDA
+Passo  1      : ROMA -> AMOR | 0.9900 | anagrammi
+Passo  2      : AMOR -> ONDA | 0.8421 | in relazione semantica
+```
+
+### 3) Con modello ONNX da file ZIP
 
 ```bash
 cargo run --release --bin ilbersaglio-cli -- OMERO ODISSEA --model-dir dist/model-bundle.zip
@@ -82,7 +100,7 @@ Note:
 - il parametro resta `--model-dir` per retrocompatibilita, ma ora accetta anche un percorso a `.zip`
 - se `--model-dir` punta a una directory senza `model.onnx`/`tokenizer.json`, la CLI prova automaticamente a usare uno ZIP compatibile trovato nella directory (es. `dist/model-bundle.zip`)
 
-### 3) Output JSON
+### 4) Output JSON
 
 ```bash
 cargo run --release --bin ilbersaglio-cli -- OMERO ODISSEA --model-dir resources/deploy --json
@@ -102,6 +120,8 @@ Esempio di output JSON:
 }
 ```
 
+Con piu di due parole, l'output JSON cambia e include `input_words`, `path`, `is_correlated` e `steps`, dove ogni elemento di `steps` descrive un collegamento della catena trovata.
+
 Il modello ONNX e obbligatorio: senza `--model-dir` (o senza variabile `ILBERSAGLIO_MODEL_DIR`) la CLI termina con errore.
 
 ## API libreria
@@ -118,6 +138,13 @@ fn main() -> anyhow::Result<()> {
     let result = calc.calculate("OMERO", "ODISSEA")?;
     println!("correlazione = {:.4}", result.score);
     println!("metodi positivi = {:?}", result.matched_methods);
+
+    let chain = calc.calculate_chain(&[
+        "ROMA".to_string(),
+        "AMOR".to_string(),
+        "ONDA".to_string(),
+    ])?;
+    println!("catena trovata = {:?}", chain.path);
     Ok(())
 }
 ```
@@ -125,8 +152,12 @@ fn main() -> anyhow::Result<()> {
 ## Note tecniche
 
 - La correlazione finale e positiva se almeno uno dei controlli disponibili ha esito positivo.
+- Con piu di due parole, la CLI cerca una catena dalla prima all'ultima scegliendo ogni volta, tra i candidati in relazione, quello con indice di correlazione piu alto.
+- Se tra i candidati esiste almeno una relazione lessicale (anagramma, differenza di una lettera, aggiunta/rimozione), queste hanno priorita rispetto ai candidati solo semantici.
+- Tutte le parole fornite in input devono comparire nella catena; l'ultima parola viene raggiunta solo dopo aver incluso le altre.
+- Se non esiste alcun candidato valido in uno step, la catena non viene trovata.
 - I controlli lessicali sono implementati in funzioni distinte, separate dal controllo semantico via ONNX.
 - I controlli lessicali hanno priorita sul controllo semantico: se almeno uno di essi e positivo, `semantic_relation` non viene aggiunto ai metodi positivi.
 - Il modulo ONNX applica mean pooling sull'output token-level e poi normalizzazione L2.
-- Il punteggio semantico e derivato da cosine similarity rimappata in `[0, 1]`; il metodo `semantic_relation` e positivo da `0.60` in su.
+- Il punteggio semantico e derivato da cosine similarity rimappata in `[0, 1]`; il metodo `semantic_relation` e positivo da `0.80` in su.
 - Il modello ONNX e obbligatorio per il calcolo: non esiste fallback lessicale.
