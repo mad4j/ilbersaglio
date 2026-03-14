@@ -52,6 +52,15 @@ Opzioni utili:
 cargo build --release
 ```
 
+## Test
+
+```bash
+cargo test
+```
+
+I casi di regressione per le catene sono definiti in `tests/fixtures/chain_cases.jsonl`.
+Ogni riga JSONL e un array JSON che descrive la sequenza canonica completa: i test usano il modello ONNX reale in `resources/models/it-mini-quant`, verificano che la sequenza configurata sia una catena valida e che qualunque permutazione delle parole intermedie converga sempre alla stessa catena restituita dal motore.
+
 ## Uso CLI
 
 ### 1) Correlazione diretta tra due parole con modello ONNX da directory

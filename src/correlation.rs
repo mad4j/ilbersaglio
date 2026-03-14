@@ -416,11 +416,216 @@ fn cosine_to_unit_interval(a: &[f32], b: &[f32]) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::{HashMap, HashSet};
+    use std::{fs, path::PathBuf};
+
+    type PairCache = HashMap<String, HashMap<String, (f32, Vec<CorrelationMethod>)>>;
 
     fn prepared_with_embedding(word: &str, embedding: Vec<f32>) -> PreparedWord {
         PreparedWord {
             word: word.to_string(),
             embedding,
+        }
+    }
+
+    fn load_chain_cases() -> Vec<Vec<String>> {
+        let fixture_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("fixtures")
+            .join("chain_cases.jsonl");
+        let contents = fs::read_to_string(&fixture_path)
+            .unwrap_or_else(|error| panic!("failed to read {}: {error}", fixture_path.display()));
+
+        contents
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| {
+                serde_json::from_str::<Vec<String>>(line)
+                    .unwrap_or_else(|error| panic!("invalid JSONL sequence '{line}': {error}"))
+            })
+            .collect()
+    }
+
+    fn test_model_dir() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("resources")
+            .join("models")
+            .join("it-mini-quant")
+    }
+
+    fn assert_path_is_valid_chain(
+        path: &[String],
+        pair_cache: &PairCache,
+        expected_words: &HashSet<String>,
+    ) {
+        assert_eq!(path.len(), expected_words.len(), "chain length mismatch");
+
+        let actual_words = path.iter().cloned().collect::<HashSet<_>>();
+        assert_eq!(actual_words, *expected_words, "chain uses unexpected words");
+
+        for pair in path.windows(2) {
+            let methods = pair_cache
+                .get(&pair[0])
+                .and_then(|targets| targets.get(&pair[1]))
+                .map(|(_, methods)| methods)
+                .unwrap_or_else(|| panic!("missing cached pair {:?}", pair));
+
+            assert!(
+                !methods.is_empty(),
+                "pair {:?} is not correlated according to the model",
+                pair
+            );
+        }
+    }
+
+    fn build_pair_cache(
+        words: &[String],
+        embeddings: &HashMap<String, Vec<f32>>,
+    ) -> PairCache {
+        let mut pair_cache = PairCache::new();
+
+        for word_a in words {
+            let source = embeddings
+                .get(word_a)
+                .unwrap_or_else(|| panic!("missing embedding for {word_a}"));
+            let targets = pair_cache.entry(word_a.clone()).or_default();
+
+            for word_b in words {
+                if word_a == word_b {
+                    continue;
+                }
+
+                let target = embeddings
+                    .get(word_b)
+                    .unwrap_or_else(|| panic!("missing embedding for {word_b}"));
+                let score = cosine_to_unit_interval(source, target);
+                let methods = collect_correlation_methods(word_a, word_b, score);
+                targets.insert(word_b.clone(), (score, methods));
+            }
+        }
+
+        pair_cache
+    }
+
+    fn collect_related_candidates_from_pair_cache(
+        words: &[String],
+        current_idx: usize,
+        target_idx: usize,
+        visited: &[bool],
+        must_delay_target: bool,
+        pair_cache: &PairCache,
+    ) -> Vec<(usize, CorrelationChainStep)> {
+        let mut candidates = Vec::new();
+
+        for candidate_idx in 0..words.len() {
+            if candidate_idx == current_idx {
+                continue;
+            }
+
+            if must_delay_target && candidate_idx == target_idx {
+                continue;
+            }
+
+            if candidate_idx != target_idx && visited[candidate_idx] {
+                continue;
+            }
+
+            let Some((score, matched_methods)) = pair_cache
+                .get(&words[current_idx])
+                .and_then(|targets| targets.get(&words[candidate_idx]))
+            else {
+                continue;
+            };
+
+            if matched_methods.is_empty() {
+                continue;
+            }
+
+            candidates.push((
+                candidate_idx,
+                CorrelationChainStep {
+                    word_a: words[current_idx].clone(),
+                    word_b: words[candidate_idx].clone(),
+                    score: *score,
+                    matched_methods: matched_methods.clone(),
+                },
+            ));
+        }
+
+        candidates
+    }
+
+    fn build_chain_result_from_pair_cache(words: &[String], pair_cache: &PairCache) -> CorrelationChainResult {
+        let input_words = words.to_vec();
+        let target_idx = words.len() - 1;
+        let mut current_idx = 0usize;
+        let mut visited = vec![false; words.len()];
+        let mut path = vec![words[current_idx].clone()];
+        let mut steps = Vec::new();
+
+        visited[current_idx] = true;
+
+        while current_idx != target_idx {
+            let candidates = collect_related_candidates_from_pair_cache(
+                words,
+                current_idx,
+                target_idx,
+                &visited,
+                has_unvisited_non_target(&visited, target_idx),
+                pair_cache,
+            );
+
+            let Some((next_idx, step)) = select_best_candidate(candidates) else {
+                return CorrelationChainResult {
+                    input_words,
+                    path: Vec::new(),
+                    is_correlated: false,
+                    steps,
+                };
+            };
+
+            if next_idx != target_idx {
+                visited[next_idx] = true;
+            }
+
+            path.push(words[next_idx].clone());
+            steps.push(step);
+            current_idx = next_idx;
+        }
+
+        CorrelationChainResult {
+            input_words,
+            path,
+            is_correlated: true,
+            steps,
+        }
+    }
+
+    fn direct_and_reverse_middle_sequences(expected_path: &[String]) -> Vec<Vec<String>> {
+        if expected_path.len() <= 2 {
+            return vec![expected_path.to_vec()];
+        }
+
+        let start = expected_path.first().cloned().unwrap();
+        let end = expected_path.last().cloned().unwrap();
+        let middle = expected_path[1..expected_path.len() - 1].to_vec();
+        let mut reversed_middle = middle.clone();
+        reversed_middle.reverse();
+
+        let mut direct = Vec::with_capacity(expected_path.len());
+        direct.push(start.clone());
+        direct.extend(middle);
+        direct.push(end.clone());
+
+        let mut reverse = Vec::with_capacity(expected_path.len());
+        reverse.push(start);
+        reverse.extend(reversed_middle);
+        reverse.push(end);
+
+        if direct == reverse {
+            vec![direct]
+        } else {
+            vec![direct, reverse]
         }
     }
 
@@ -582,5 +787,58 @@ mod tests {
         let selected = select_best_candidate(vec![semantic, lexical]).unwrap();
         assert_eq!(selected.1.word_b, "ASSEDIO");
         assert_eq!(selected.1.matched_methods, vec![CorrelationMethod::Anagram]);
+    }
+
+    #[test]
+    fn jsonl_chain_cases_reach_expected_solution_for_direct_and_reverse_middle_sequence() {
+        let calculator = CorrelationCalculator::new(CorrelationConfig {
+            model_dir: Some(test_model_dir()),
+        })
+        .expect("test model should be available");
+
+        for expected_case in load_chain_cases() {
+            let expected_path = normalize_chain_words(&expected_case).unwrap();
+            let expected_words = expected_path.iter().cloned().collect::<HashSet<_>>();
+            let embeddings = calculator
+                .prepare_words(&expected_path)
+                .unwrap()
+                .into_iter()
+                .map(|prepared_word| (prepared_word.word, prepared_word.embedding))
+                .collect::<HashMap<_, _>>();
+            let pair_cache = build_pair_cache(&expected_path, &embeddings);
+            assert_path_is_valid_chain(&expected_path, &pair_cache, &expected_words);
+
+            let reference_result = build_chain_result_from_pair_cache(&expected_path, &pair_cache);
+
+            assert!(
+                reference_result.is_correlated,
+                "expected the canonical sequence input to produce a valid chain"
+            );
+            assert_path_is_valid_chain(&reference_result.path, &pair_cache, &expected_words);
+
+            let candidate_sequences = direct_and_reverse_middle_sequences(&expected_path);
+            let mut checked_sequences = 0usize;
+
+            for candidate_words in candidate_sequences {
+                checked_sequences += 1;
+                let result = build_chain_result_from_pair_cache(&candidate_words, &pair_cache);
+
+                assert!(
+                    result.is_correlated,
+                    "expected a valid chain for input {:?}",
+                    candidate_words
+                );
+                assert_eq!(result.path.first(), expected_path.first());
+                assert_eq!(result.path.last(), expected_path.last());
+                assert_eq!(
+                    result.path, reference_result.path,
+                    "unexpected ONNX chain for input {:?}",
+                    candidate_words
+                );
+                assert_path_is_valid_chain(&result.path, &pair_cache, &expected_words);
+            }
+
+            assert!(checked_sequences > 0, "no sequences were checked");
+        }
     }
 }
